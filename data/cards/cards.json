@@ -1,0 +1,27 @@
+[
+  {
+    "id": "investigate-before-judging",
+    "title": "先看见事实",
+    "text": "还没有到现场看见人和事，就先别急着下判断；把事实摸清楚，话才有分量。",
+    "source": "毛选摘意卡风格示例",
+    "reference": "可替换为你的 PDF、书籍或笔记来源",
+    "action": "今天先问三个事实问题，再给结论。"
+  },
+  {
+    "id": "small-step",
+    "title": "把问题拆小",
+    "text": "大问题通常不是一次解决的。先找到最小的可行动步骤，让反馈尽快回来。",
+    "source": "项目内置行动卡",
+    "reference": "data/cards/cards.json",
+    "action": "写下一个 15 分钟内能完成的动作。"
+  },
+  {
+    "id": "search-then-answer",
+    "title": "先召回再回答",
+    "text": "不要凭印象输出答案。先检索材料，再把依据、边界和结论分开。",
+    "source": "RAG 使用原则",
+    "reference": "本项目召回问答流程",
+    "action": "回答前先检查来源是否支撑结论。"
+  }
+]
+

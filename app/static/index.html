@@ -1,0 +1,35 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>llamaqwen-search</title>
+    <link rel="stylesheet" href="/static/styles.css" />
+  </head>
+  <body>
+    <main class="shell">
+      <section class="card-panel">
+        <div class="brand">llamaqwen-search</div>
+        <h1>每日抽卡</h1>
+        <p class="subtitle">抽一张，留给行动前的一点清醒。</p>
+        <article id="daily-card" class="daily-card" aria-live="polite">
+          <span class="muted">加载中...</span>
+        </article>
+        <button id="draw-card" type="button">再抽一张</button>
+      </section>
+
+      <section class="search-panel">
+        <div>
+          <h2>本地资料检索</h2>
+          <p class="subtitle">把 PDF 放进 <code>data/docs</code>，启动时会加载索引，用本地 Ollama Qwen 模型回答。</p>
+        </div>
+        <form id="ask-form">
+          <textarea id="question" rows="5" placeholder="输入你要问资料库的问题"></textarea>
+          <button type="submit">召回并回答</button>
+        </form>
+        <div id="answer" class="answer" aria-live="polite"></div>
+      </section>
+    </main>
+    <script src="/static/app.js"></script>
+  </body>
+</html>
