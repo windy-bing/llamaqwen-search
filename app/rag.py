@@ -657,10 +657,10 @@ def node_to_card(node) -> DailyCard:
     return DailyCard(
         id=node.node_id,
         title=title,
-        text=trim_card_text(content),
+        text=build_fallback_card_text(content),
         source=str(file_name),
         reference=reference,
-        action="把这一段和今天要处理的问题联系起来，先写下一条可执行动作。",
+        action=build_fallback_card_action(content),
     )
 
 
@@ -674,7 +674,7 @@ def generate_share_card(node, fallback: DailyCard) -> DailyCard:
     text = clean_generated_text(payload.get("text", ""), limit=110)
     action = clean_generated_text(payload.get("action", ""), limit=50)
 
-    if len(title) < 2 or len(text) < 18:
+    if len(title) < 2 or len(text) < 18 or looks_like_raw_excerpt(text):
         return fallback
 
     return DailyCard(
@@ -695,10 +695,12 @@ def build_card_prompt(content: str, source: str, reference: str) -> str:
 1. 不要逐字摘抄长段原文，要提炼成一句有启发的摘意。
 2. 观点必须能从资料片段中得到支撑，不要编造资料外事实。
 3. 语言要像给普通读者看的卡片：清楚、短、有行动感。
-4. title 控制在 4-12 个中文字符。
-5. text 控制在 40-90 个中文字符。
-6. action 控制在 12-28 个中文字符。
-7. 只输出 JSON，不要 Markdown，不要解释。
+4. 输出要正向、可分享：从材料中提炼“今天可以怎么做”，不要堆叠批判性原文。
+5. 如果片段从半句话开始，忽略残缺开头，提炼完整意思。
+6. title 控制在 4-12 个中文字符。
+7. text 控制在 40-90 个中文字符。
+8. action 控制在 12-28 个中文字符。
+9. 只输出 JSON，不要 Markdown，不要解释。
 
 JSON 格式：
 {{"title":"", "text":"", "action":""}}
@@ -734,6 +736,73 @@ def clean_generated_text(value: str, limit: int) -> str:
     return trim_card_text(cleaned, limit=limit)
 
 
+def build_fallback_card_text(content: str) -> str:
+    sentences = meaningful_sentences(content)
+    lead = select_card_sentence(sentences)
+    if not lead:
+        return "行动前先回到事实本身，分清条件、节奏和边界，再决定下一步。"
+
+    if has_any(lead, ("冒险", "不适时宜", "错误", "左", "盲动", "急躁")):
+        return "越是目标迫切，越要先看清条件和长期性；节奏错了，正确方向也会变成风险。"
+    if has_any(lead, ("长期", "阶段", "条件", "准备", "经常工作")):
+        return "把眼前行动放回长期过程里判断，先稳住基础工作，再推动真正可持续的进展。"
+    if has_any(lead, ("调查", "研究", "实际", "事实", "群众")):
+        return "先让事实说话，再让判断成形；离开实际情况，行动很容易只剩下愿望。"
+    if has_any(lead, ("统一", "组织", "领导", "集中", "协同")):
+        return "协同不是简单集中，而是让目标、条件和节奏对齐，减少无效消耗。"
+
+    cleaned = remove_fragment_prefix(lead)
+    if len(cleaned) < 24 and len(sentences) > 1:
+        cleaned = f"{cleaned}；{remove_fragment_prefix(sentences[1])}"
+    return trim_card_text(cleaned, limit=88)
+
+
+def build_fallback_card_action(content: str) -> str:
+    if has_any(content, ("冒险", "不适时宜", "错误", "左", "盲动", "急躁")):
+        return "先核对条件，再决定动作"
+    if has_any(content, ("长期", "阶段", "准备", "经常工作")):
+        return "把今天的事放进长期节奏"
+    if has_any(content, ("调查", "研究", "实际", "事实")):
+        return "先补一条事实依据"
+    return "写下一步最小可行动作"
+
+
+def meaningful_sentences(content: str) -> list[str]:
+    normalized = normalize_text(content)
+    parts = re.split(r"(?<=[。！？!?])\s*|[；;]\s*", normalized)
+    sentences = []
+    for part in parts:
+        cleaned = remove_fragment_prefix(part)
+        if 12 <= len(cleaned) <= 180:
+            sentences.append(cleaned)
+    return sentences
+
+
+def select_card_sentence(sentences: list[str]) -> str:
+    if not sentences:
+        return ""
+    preferred_keywords = ("应当", "必须", "不要", "不能", "只有", "由于", "因此", "长期", "实际", "条件", "准备", "错误")
+    for sentence in sentences:
+        if has_any(sentence, preferred_keywords):
+            return sentence
+    return sentences[0]
+
+
+def remove_fragment_prefix(value: str) -> str:
+    cleaned = normalize_text(value).strip("，,；;。.!?！？、 ")
+    if "。" in cleaned[:18]:
+        cleaned = cleaned.split("。", 1)[-1].strip()
+    return cleaned
+
+
+def looks_like_raw_excerpt(value: str) -> bool:
+    return len(value) > 120 or value.count("，") + value.count("；") >= 5 or value.endswith("...")
+
+
+def has_any(value: str, keywords: tuple[str, ...]) -> bool:
+    return any(keyword in value for keyword in keywords)
+
+
 def normalize_text(value: str) -> str:
     return re.sub(r"\s+", " ", value).strip()
 
@@ -745,7 +814,16 @@ def trim_card_text(value: str, limit: int = 180) -> str:
 
 
 def build_card_title(value: str) -> str:
-    sentence = re.split(r"[。！？!?]|[.](?:\s|$)", value, maxsplit=1)[0].strip()
+    if has_any(value, ("冒险", "不适时宜", "错误", "左", "盲动", "急躁")):
+        return "先看条件"
+    if has_any(value, ("长期", "阶段", "准备", "经常工作")):
+        return "长期节奏"
+    if has_any(value, ("调查", "研究", "实际", "事实", "群众")):
+        return "回到事实"
+    if has_any(value, ("统一", "组织", "领导", "集中", "协同")):
+        return "对齐节奏"
+
+    sentence = remove_fragment_prefix(re.split(r"[。！？!?]|[.](?:\s|$)", value, maxsplit=1)[0])
     if not sentence:
         return "今日一段"
-    return trim_card_text(sentence, limit=18)
+    return trim_card_text(sentence, limit=12)
