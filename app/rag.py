@@ -5,6 +5,7 @@ from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
 import json
+import logging
 import math
 from pathlib import Path
 import random
@@ -18,18 +19,21 @@ from app.cards import DailyCard, stable_seed
 from app.config import Settings as AppSettings
 
 
+logger = logging.getLogger(__name__)
+
+
 class LexicalIndex:
     def __init__(self) -> None:
         self._inverted: dict[str, list[int]] = defaultdict(list)
-        self._documents: list[tuple[str, str]] = []
+        self._node_ids: list[str] = []
 
     def build(self, docstore: Any) -> None:
         self._inverted.clear()
-        self._documents.clear()
+        self._node_ids.clear()
         for node_id, node in docstore.docs.items():
             text = normalize_text(node.get_content(metadata_mode="none"))
-            doc_idx = len(self._documents)
-            self._documents.append((node_id, text))
+            doc_idx = len(self._node_ids)
+            self._node_ids.append(node_id)
             seen = set()
             for token in tokenize_text(text):
                 if token not in seen:
@@ -45,10 +49,13 @@ class LexicalIndex:
                 candidates.update(self._inverted[term])
         scored: list[tuple[Any, float]] = []
         for doc_idx in candidates:
-            node_id, text = self._documents[doc_idx]
+            node_id = self._node_ids[doc_idx]
+            node = docstore.docs.get(node_id)
+            if node is None:
+                continue
+            text = normalize_text(node.get_content(metadata_mode="none"))
             score = lexical_score(terms, text)
             if score > 0:
-                node = docstore.docs[node_id]
                 scored.append((node, score))
         scored.sort(key=lambda item: item[1], reverse=True)
         return scored[:top_k]
@@ -89,11 +96,14 @@ class RagService:
         self.retriever = None
         self.lexical_index: LexicalIndex | None = None
         self.card_cache: dict[str, DailyCard] = {}
+        self.card_nodes_cache: list[Any] | None = None
 
     def load(self) -> None:
         from llama_index.embeddings.ollama import OllamaEmbedding
         from llama_index.llms.ollama import Ollama
 
+        self.card_cache.clear()
+        self.card_nodes_cache = None
         self.settings.docs_dir.mkdir(parents=True, exist_ok=True)
         self.settings.index_dir.mkdir(parents=True, exist_ok=True)
 
@@ -109,8 +119,12 @@ class RagService:
 
         has_existing_index = has_persisted_index(self.settings.index_dir)
         if has_existing_index and not self.settings.rebuild_index:
-            storage_context = StorageContext.from_defaults(persist_dir=str(self.settings.index_dir))
-            self.index = load_index_from_storage(storage_context)
+            try:
+                storage_context = StorageContext.from_defaults(persist_dir=str(self.settings.index_dir))
+                self.index = load_index_from_storage(storage_context)
+            except Exception:
+                logger.exception("Failed to load persisted index; rebuilding from documents.")
+                self.index = self._build_index()
         else:
             self.index = self._build_index()
 
@@ -212,12 +226,15 @@ class RagService:
     def _card_nodes(self):
         if self.index is None:
             return []
+        if self.card_nodes_cache is not None:
+            return self.card_nodes_cache
 
         nodes = []
         for node in self.index.docstore.docs.values():
             content = normalize_text(node.get_content(metadata_mode="none"))
             if 80 <= len(content) <= 2500:
                 nodes.append(node)
+        self.card_nodes_cache = nodes
         return nodes
 
     def _generate_card(self, node) -> DailyCard:
@@ -241,12 +258,21 @@ def list_supported_files(docs_dir: Path) -> list[Path]:
 
 
 def has_persisted_index(index_dir: Path) -> bool:
-    return any(path.is_file() and path.name != ".gitkeep" for path in index_dir.iterdir())
+    required_files = {"docstore.json", "index_store.json", "graph_store.json", "default__vector_store.json"}
+    try:
+        existing_files = {path.name for path in index_dir.iterdir() if path.is_file() and path.stat().st_size > 0}
+    except OSError:
+        return False
+    return required_files.issubset(existing_files)
 
 
 def build_document_metadata(path: Path, docs_dir: Path) -> dict[str, Any]:
     sidecar = load_sidecar_metadata(path)
-    stat = path.stat()
+    try:
+        stat = path.stat()
+        file_modified_at = datetime.fromtimestamp(stat.st_mtime).date().isoformat()
+    except OSError:
+        file_modified_at = None
     relative_path = str(path.relative_to(docs_dir)) if path.is_relative_to(docs_dir) else str(path)
     inferred_date = infer_date_from_text(path.stem)
     effective_at = sidecar.get("effective_at") or sidecar.get("date") or (inferred_date.isoformat() if inferred_date else None)
@@ -264,7 +290,7 @@ def build_document_metadata(path: Path, docs_dir: Path) -> dict[str, Any]:
         "version": sidecar.get("version"),
         "topic_tags": tags,
         "indexed_at": datetime.now().date().isoformat(),
-        "file_modified_at": datetime.fromtimestamp(stat.st_mtime).date().isoformat(),
+        "file_modified_at": file_modified_at,
     }
 
 
@@ -594,18 +620,6 @@ def build_conflict_hint(evidence: list[Evidence]) -> str:
 
 def remove_think_block(value: str) -> str:
     return re.sub(r"<think>.*?</think>", "", value, flags=re.DOTALL).strip()
-
-
-def node_to_source(item: NodeWithScore) -> dict[str, str | float | None]:
-    metadata = dict(item.node.metadata or {})
-    file_name = metadata.get("file_name") or metadata.get("filename")
-    page_label = metadata.get("page_label") or metadata.get("page_number")
-    return {
-        "file": str(file_name) if file_name else None,
-        "page": str(page_label) if page_label else None,
-        "score": item.score,
-        "excerpt": item.node.get_content(metadata_mode="none")[:500],
-    }
 
 
 def evidence_to_source(item: Evidence, rank: int) -> dict[str, str | float | None]:
