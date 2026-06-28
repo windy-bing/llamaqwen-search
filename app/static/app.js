@@ -90,8 +90,20 @@ form.addEventListener("submit", async (event) => {
 
   const sources = (data.sources || [])
     .map((source) => {
-      const name = [source.file, source.page ? `第 ${source.page} 页` : ""].filter(Boolean).join(" · ");
-      return `<li>${escapeHtml(name || "未知来源")}<br />${escapeHtml(source.excerpt || "")}</li>`;
+      const name = [source.id, source.file, source.page ? `第 ${source.page} 页` : ""].filter(Boolean).join(" · ");
+      const meta = [
+        source.status ? `状态：${source.status}` : "",
+        source.effective_at ? `生效：${source.effective_at}` : "",
+        source.expired_at ? `失效：${source.expired_at}` : "",
+        source.version ? `版本：${source.version}` : "",
+        source.authority ? `权威：${source.authority}` : "",
+      ].filter(Boolean).join(" · ");
+      return `<li>
+        <strong>${escapeHtml(name || "未知来源")}</strong><br />
+        ${meta ? `<span class="muted">${escapeHtml(meta)}</span><br />` : ""}
+        ${source.reason ? `<span class="muted">${escapeHtml(source.reason)}</span><br />` : ""}
+        ${escapeHtml(source.excerpt || "")}
+      </li>`;
     })
     .join("");
 

@@ -15,6 +15,9 @@ class Settings(BaseSettings):
     index_dir: Path = Field(default=Path("storage/index"), alias="INDEX_DIR")
     cards_file: Path = Field(default=Path("data/cards/cards.json"), alias="CARDS_FILE")
     top_k: int = Field(default=4, alias="TOP_K")
+    candidate_top_k: int = Field(default=30, alias="CANDIDATE_TOP_K")
+    lexical_top_k: int = Field(default=30, alias="LEXICAL_TOP_K")
+    max_evidence: int = Field(default=10, alias="MAX_EVIDENCE")
     rebuild_index: bool = Field(default=False, alias="REBUILD_INDEX")
 
 

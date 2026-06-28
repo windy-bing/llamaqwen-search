@@ -42,6 +42,9 @@ def health() -> dict[str, str | int]:
         "status": "ok",
         "model": settings.ollama_model,
         "top_k": settings.top_k,
+        "candidate_top_k": settings.candidate_top_k,
+        "lexical_top_k": settings.lexical_top_k,
+        "max_evidence": settings.max_evidence,
     }
 
 

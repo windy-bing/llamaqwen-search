@@ -9,7 +9,7 @@
 - 支持把 PDF、Markdown、TXT、DOCX 放到 `data/docs`
 - 启动时加载或构建向量索引，索引持久化在 `storage/index`
 - 使用 Ollama 本地模型，默认 `qwen3:4b`
-- 提供 `/api/ask` 召回问答接口
+- 提供 `/api/ask` 问答接口：混合召回、重排、去重、来源多样性、时间有效性和冲突提示
 - 提供 `/api/card/today` 和 `/api/card/draw` 抽卡接口，优先从向量索引随机取依据片段，再用本地 Qwen 提炼成可分享卡片
 - 内置一个极简 Web 页面，风格接近每日摘意卡
 
@@ -23,7 +23,9 @@
 - 本地模型集成直接：`llama-index-llms-ollama` 和 `llama-index-embeddings-ollama` 能同时接入本地 Qwen 和本地 embedding 模型，数据不需要离开本机。
 - 方便继续演进：后续如果要换向量库、加 rerank、做混合检索、加多路检索或接入更复杂的 Agent 流程，不需要推翻现有结构。
 
-简单说，LlamaIndex 负责资料到索引再到召回的工程骨架，Ollama/Qwen 负责本地生成。两者分工清楚，后续扩展空间比直接手写一套 RAG 管线更稳。
+当前问答链路不是把向量 top-k 直接交给模型，而是先扩大候选召回，再融合向量分数、词法命中、来源权威、时间状态做证据排序。回答前会把证据整理成带编号的证据包，要求模型显式区分当前资料、历史资料、失效资料和版本风险。
+
+简单说，LlamaIndex 负责资料到索引再到候选召回的工程骨架，项目内的证据管线负责生产级聚合和风险控制，Ollama/Qwen 负责本地生成。
 
 ## 准备 Ollama
 
@@ -73,6 +75,31 @@ REBUILD_INDEX=true uvicorn app.main:app --reload --host 0.0.0.0 --port 8000
 python scripts/rebuild_index.py
 ```
 
+### 文档元数据
+
+为了让系统可靠处理多个文件、版本和历史资料，可以给每个文档放一个同名元数据文件：
+
+```text
+data/docs/policy.pdf
+data/docs/policy.pdf.metadata.json
+```
+
+支持字段：
+
+```json
+{
+  "authority": "official",
+  "effective_at": "2024-01-01",
+  "expired_at": null,
+  "version": "2024.1",
+  "tags": ["policy", "finance"]
+}
+```
+
+`authority` 可用值建议为 `official`、`internal`、`trusted`、`local`、`user`、`archive`。如果没有元数据文件，系统会从文件名推断日期，并把来源按本地资料处理。新增或修改元数据后需要重建索引。
+
+问答时系统会按问题解析时间意图：问“当前/现行/最新”时优先当前有效资料，命中历史或失效资料会降权并提示；问“当时/历史/演变/某一年”时会保留历史资料并按时间解释。
+
 每日抽卡也会读取同一份索引内容：如果索引里有文档片段，服务会先随机选一个片段作为依据，再调用本地 Qwen 生成“标题 + 摘意 + 行动建议”的卡片，并保留文件名和页码。这样页面展示的是提炼后的思考卡，不是随机原文段落。如果还没有资料，会退回到 `data/cards/cards.json` 里的示例卡。
 
 ## API
@@ -98,5 +125,8 @@ curl -X POST http://localhost:8000/api/card/draw
 | `DOCS_DIR` | `data/docs` | 文档目录 |
 | `INDEX_DIR` | `storage/index` | 索引目录 |
 | `CARDS_FILE` | `data/cards/cards.json` | 抽卡内容 |
-| `TOP_K` | `4` | 召回数量 |
+| `TOP_K` | `4` | 兼容旧配置的基础召回数量 |
+| `CANDIDATE_TOP_K` | `30` | 向量候选召回数量，用于重排前扩大候选池 |
+| `LEXICAL_TOP_K` | `30` | 关键词候选召回数量，用于补足精确命中 |
+| `MAX_EVIDENCE` | `10` | 最终交给模型的证据数量 |
 | `REBUILD_INDEX` | `false` | 启动时强制重建索引 |
