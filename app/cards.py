@@ -26,16 +26,30 @@ class CardDeck:
 
     def load(self) -> None:
         if not self.cards_file.exists():
-            raise FileNotFoundError(f"Cards file not found: {self.cards_file}")
+            self.cards = []
+            return
 
-        raw_cards = json.loads(self.cards_file.read_text(encoding="utf-8"))
-        self.cards = [DailyCard(**item) for item in raw_cards]
-        if not self.cards:
-            raise ValueError("Cards file is empty.")
+        try:
+            raw_cards = json.loads(self.cards_file.read_text(encoding="utf-8"))
+            self.cards = [DailyCard(**item) for item in raw_cards]
+        except (OSError, json.JSONDecodeError, ValueError):
+            self.cards = []
+
+    def _empty_fallback(self) -> DailyCard:
+        return DailyCard(
+            id="empty",
+            title="暂无卡片",
+            text="还没有可用的卡片内容。请检查 data/cards/cards.json 文件，或向 data/docs 放入资料后重建索引。",
+            source="系统",
+            reference="",
+            action="先放入资料或配置卡片文件。",
+        )
 
     def today(self, user_key: str = "default", today: date | None = None) -> DailyCard:
         if not self.cards:
             self.load()
+        if not self.cards:
+            return self._empty_fallback()
 
         current_date = today or date.today()
         seed = stable_seed(f"{current_date.isoformat()}:{user_key}")
@@ -44,6 +58,9 @@ class CardDeck:
     def draw(self, exclude_id: str | None = None) -> DailyCard:
         if not self.cards:
             self.load()
+        if not self.cards:
+            return self._empty_fallback()
+
         candidates = [card for card in self.cards if card.id != exclude_id]
         return random.choice(candidates or self.cards)
 

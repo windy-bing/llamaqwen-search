@@ -18,6 +18,8 @@ class Settings(BaseSettings):
     candidate_top_k: int = Field(default=30, alias="CANDIDATE_TOP_K")
     lexical_top_k: int = Field(default=30, alias="LEXICAL_TOP_K")
     max_evidence: int = Field(default=10, alias="MAX_EVIDENCE")
+    chunk_size: int = Field(default=1024, alias="CHUNK_SIZE")
+    chunk_overlap: int = Field(default=200, alias="CHUNK_OVERLAP")
     rebuild_index: bool = Field(default=False, alias="REBUILD_INDEX")
 
 

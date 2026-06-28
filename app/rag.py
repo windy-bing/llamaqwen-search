@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from dataclasses import dataclass
 from datetime import date, datetime
 import hashlib
@@ -15,6 +16,42 @@ from llama_index.core.schema import NodeWithScore
 
 from app.cards import DailyCard, stable_seed
 from app.config import Settings as AppSettings
+
+
+class LexicalIndex:
+    def __init__(self) -> None:
+        self._inverted: dict[str, list[int]] = defaultdict(list)
+        self._documents: list[tuple[str, str]] = []
+
+    def build(self, docstore: Any) -> None:
+        self._inverted.clear()
+        self._documents.clear()
+        for node_id, node in docstore.docs.items():
+            text = normalize_text(node.get_content(metadata_mode="none"))
+            doc_idx = len(self._documents)
+            self._documents.append((node_id, text))
+            seen = set()
+            for token in tokenize_text(text):
+                if token not in seen:
+                    seen.add(token)
+                    self._inverted[token].append(doc_idx)
+
+    def search(self, docstore: Any, terms: list[str], top_k: int) -> list[tuple[Any, float]]:
+        if not terms:
+            return []
+        candidates: set[int] = set()
+        for term in terms:
+            if term in self._inverted:
+                candidates.update(self._inverted[term])
+        scored: list[tuple[Any, float]] = []
+        for doc_idx in candidates:
+            node_id, text = self._documents[doc_idx]
+            score = lexical_score(terms, text)
+            if score > 0:
+                node = docstore.docs[node_id]
+                scored.append((node, score))
+        scored.sort(key=lambda item: item[1], reverse=True)
+        return scored[:top_k]
 
 
 @dataclass
@@ -50,6 +87,7 @@ class RagService:
         self.settings = settings
         self.index: VectorStoreIndex | None = None
         self.retriever = None
+        self.lexical_index: LexicalIndex | None = None
         self.card_cache: dict[str, DailyCard] = {}
 
     def load(self) -> None:
@@ -82,6 +120,8 @@ class RagService:
 
         candidate_top_k = max(self.settings.candidate_top_k, self.settings.top_k)
         self.retriever = self.index.as_retriever(similarity_top_k=candidate_top_k)
+        self.lexical_index = LexicalIndex()
+        self.lexical_index.build(self.index.docstore)
 
     def ask(self, question: str) -> SearchResult:
         if self.index is None or self.retriever is None:
@@ -120,6 +160,9 @@ class RagService:
         if not input_files:
             return None
 
+        Settings.chunk_size = self.settings.chunk_size
+        Settings.chunk_overlap = self.settings.chunk_overlap
+
         documents = SimpleDirectoryReader(input_files=[str(path) for path in input_files]).load_data()
         metadata_by_key: dict[str, dict[str, Any]] = {}
         name_counts: dict[str, int] = {}
@@ -127,7 +170,6 @@ class RagService:
             name_counts[path.name] = name_counts.get(path.name, 0) + 1
         for path in input_files:
             metadata = build_document_metadata(path, self.settings.docs_dir)
-            metadata_by_key[str(path)] = metadata
             metadata_by_key[str(path.resolve())] = metadata
             metadata_by_key[metadata["relative_path"]] = metadata
             if name_counts[path.name] == 1:
@@ -136,7 +178,12 @@ class RagService:
             current = dict(document.metadata or {})
             file_path = current.get("file_path")
             file_name = current.get("file_name") or current.get("filename")
-            enriched = metadata_by_key.get(str(file_path)) or metadata_by_key.get(str(Path(str(file_path)).resolve()) if file_path else "") or metadata_by_key.get(str(file_name), {})
+            enriched: dict[str, Any] = {}
+            if file_path:
+                abs_key = str(Path(file_path).resolve())
+                enriched = metadata_by_key.get(abs_key) or {}
+            if not enriched and file_name:
+                enriched = metadata_by_key.get(str(file_name)) or {}
             current.update(enriched)
             current["content_hash"] = stable_content_hash(document.get_content(metadata_mode="none"))
             document.metadata = current
@@ -158,18 +205,9 @@ class RagService:
         return diversify_sources(scored, self.settings.max_evidence)
 
     def _lexical_retrieve(self, query_context: QueryContext) -> list[tuple[Any, float]]:
-        if self.index is None:
+        if self.index is None or self.lexical_index is None:
             return []
-
-        scored: list[tuple[Any, float]] = []
-        for node in self.index.docstore.docs.values():
-            text = normalize_text(node.get_content(metadata_mode="none"))
-            score = lexical_score(query_context.terms, text)
-            if score > 0:
-                scored.append((node, score))
-
-        scored.sort(key=lambda item: item[1], reverse=True)
-        return scored[: self.settings.lexical_top_k]
+        return self.lexical_index.search(self.index.docstore, query_context.terms, self.settings.lexical_top_k)
 
     def _card_nodes(self):
         if self.index is None:
@@ -239,8 +277,8 @@ def load_sidecar_metadata(path: Path) -> dict[str, Any]:
         if not candidate.exists():
             continue
         try:
-            with candidate.open("r", encoding="utf-8") as file:
-                payload = json.load(file)
+            with candidate.open("r", encoding="utf-8") as fp:
+                payload = json.load(fp)
         except (OSError, json.JSONDecodeError):
             continue
         if isinstance(payload, dict):
@@ -332,7 +370,7 @@ def classify_temporal_mode(value: str) -> str:
     return "current"
 
 
-def tokenize_query(value: str) -> list[str]:
+def tokenize_text(value: str, max_terms: int = 0) -> list[str]:
     terms: list[str] = []
     for token in re.findall(r"[A-Za-z0-9_./-]+|[\u4e00-\u9fff]+", value.lower()):
         if re.fullmatch(r"[\u4e00-\u9fff]+", token):
@@ -348,7 +386,13 @@ def tokenize_query(value: str) -> list[str]:
         if term not in seen:
             unique_terms.append(term)
             seen.add(term)
-    return unique_terms[:80]
+    if max_terms > 0:
+        return unique_terms[:max_terms]
+    return unique_terms
+
+
+def tokenize_query(value: str) -> list[str]:
+    return tokenize_text(value, max_terms=80)
 
 
 def lexical_score(terms: list[str], text: str) -> float:
@@ -479,7 +523,7 @@ def diversify_sources(items: list[Evidence], limit: int) -> list[Evidence]:
     per_source: dict[str, int] = {}
     for item in items:
         source = str(item.metadata.get("source_id") or item.metadata.get("file_name") or "unknown")
-        if per_source.get(source, 0) >= 3 and len(selected) < limit:
+        if per_source.get(source, 0) >= 3:
             continue
         selected.append(item)
         per_source[source] = per_source.get(source, 0) + 1
@@ -654,14 +698,21 @@ JSON 格式：
 
 def parse_json_object(value: str) -> dict[str, str]:
     cleaned = re.sub(r"<think>.*?</think>", "", value, flags=re.DOTALL).strip()
-    match = re.search(r"\{.*\}", cleaned, flags=re.DOTALL)
-    if not match:
-        raise ValueError("LLM response does not contain a JSON object.")
-
-    parsed = json.loads(match.group(0))
-    if not isinstance(parsed, dict):
-        raise ValueError("LLM response JSON is not an object.")
-    return {str(key): str(val) for key, val in parsed.items()}
+    decoder = json.JSONDecoder()
+    idx = 0
+    while idx < len(cleaned):
+        if cleaned[idx] in " \t\n\r":
+            idx += 1
+            continue
+        if cleaned[idx] == "{":
+            try:
+                parsed, end = decoder.raw_decode(cleaned, idx)
+                if isinstance(parsed, dict):
+                    return {str(key): str(val) for key, val in parsed.items()}
+            except json.JSONDecodeError:
+                pass
+        idx += 1
+    raise ValueError("LLM response does not contain a JSON object.")
 
 
 def clean_generated_text(value: str, limit: int) -> str:
@@ -680,7 +731,7 @@ def trim_card_text(value: str, limit: int = 180) -> str:
 
 
 def build_card_title(value: str) -> str:
-    sentence = re.split(r"[。！？.!?]", value, maxsplit=1)[0].strip()
+    sentence = re.split(r"[。！？!?]|[.](?:\s|$)", value, maxsplit=1)[0].strip()
     if not sentence:
         return "今日一段"
     return trim_card_text(sentence, limit=18)
